@@ -4,7 +4,7 @@
 # Define the number of master and worker nodes
 # If this number is changed, remember to update setup-hosts.sh script with the new hosts IP details in /etc/hosts of each VM.
 NUM_MASTER_NODE = 2
-NUM_WORKER_NODE = 2
+NUM_WORKER_NODE = 3
 
 IP_NW = "192.168.5."
 MASTER_IP_START = 10
@@ -13,7 +13,7 @@ LB_IP_START = 30
 
 $firstcpnodeup = <<-'SCRIPT'
 IP_ADDR=`ip addr show enp0s8 | grep -w inet | awk '{print $2}' | cut -d/ -f1`
-kubeadm init --apiserver-advertise-address="$IP_ADDR" --control-plane-endpoint "lb:6443" --upload-certs
+kubeadm init --apiserver-advertise-address="$IP_ADDR" --control-plane-endpoint="lb:6443" --upload-certs
 sudo --user=vagrant mkdir -p /home/vagrant/.kube
 cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
 chown $(id -u vagrant):$(id -g vagrant) /home/vagrant/.kube/config
@@ -21,10 +21,18 @@ export KUBECONFIG=/etc/kubernetes/admin.conf
 kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"
 kubeadm token create --print-join-command >> /etc/kubeadm_join_cmd.sh
 chmod +x /etc/kubeadm_join_cmd.sh
+mkdir -p /vagrant/cluster-secrets/etcd
+sudo cp /etc/kubernetes/pki/{ca,front-proxy-ca}.{crt,key} /vagrant/cluster-secrets/
+sudo cp /etc/kubernetes/pki/sa.{key,pub} /vagrant/cluster-secrets/
+sudo cp /etc/kubernetes/pki/etcd/ca.{crt,key} /vagrant/cluster-secrets/etcd/
+sudo cp /etc/kubernetes/admin.conf /vagrant/cluster-secrets/
 SCRIPT
 
 $cpnodeup = <<-'SCRIPT'
 sshpass -p "vagrant" scp -o StrictHostKeyChecking=no vagrant@master-1:/etc/kubeadm_join_cmd.sh .
+mkdir -p /etc/kubernetes/pki/etcd
+sshpass -p "vagrant" scp -o StrictHostKeyChecking=no vagrant@master-1:/vagrant/cluster-secrets/etcd/* /etc/kubernetes/pki/etcd
+sshpass -p "vagrant" scp -o StrictHostKeyChecking=no vagrant@master-1:/vagrant/cluster-secrets/* /etc/kubernetes/pki
 IP_ADDR=`ip addr show enp0s8 | grep -w inet | awk '{print $2}' | cut -d/ -f1`
 $(cat kubeadm_join_cmd.sh) --apiserver-advertise-address=$IP_ADDR --control-plane
 SCRIPT
@@ -80,14 +88,18 @@ Vagrant.configure("2") do |config|
   # Provision Load Balancer Node
   config.vm.define "loadbalancer" do |node|
     node.vm.provider "virtualbox" do |vb|
-        vb.name = "kube-hb-lb"
+        vb.name = "kube-ha-lb"
         vb.memory = 512
         vb.cpus = 1
     end
-    node.vm.hostname = "hb-loadbalancer"
+    node.vm.hostname = "ha-loadbalancer"
     node.vm.network :private_network, ip: IP_NW + "#{LB_IP_START}"
 	node.vm.network "forwarded_port", guest: 22, host: 2730
-
+    node.vm.provision "setup-ip-forward", :type => "shell", inline: "cat <<EOF | tee /etc/sysctl.d/10-ipforward.conf
+                                                                         net.ipv4.ip_forward = 1
+                                                                         EOF"
+    node.vm.provision "setup-ip-forward", :type => "shell", inline: "sysctl -w net.ipv4.ip_forward=1"
+    node.vm.provision "setup-masquerade", :type => "shell", inline: "iptables -t nat -A POSTROUTING -o enp0s3 -j MASQUERADE"
     node.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
       s.args = ["enp0s8"]
     end
@@ -96,6 +108,7 @@ Vagrant.configure("2") do |config|
 	node.vm.provision "install-haproxy", type: "shell", :path => "ubuntu/install-haproxy.sh"
     node.vm.provision "setup-haproxy", :type => "shell", :path => "ubuntu/vagrant/setup-haproxy.sh"
     node.vm.provision "setup-ssh", :type => "shell", :path => "ubuntu/vagrant/setup-ssh.sh"
+
   end
 
   # Provision Master Nodes
@@ -103,14 +116,14 @@ Vagrant.configure("2") do |config|
       config.vm.define "master-0#{i}" do |node|
         # Name shown in the GUI
         node.vm.provider "virtualbox" do |vb|
-            vb.name = "kube-hb-master-0#{i}"
+            vb.name = "kube-ha-master-0#{i}"
             vb.memory = 2048
             vb.cpus = 2
         end
         node.vm.hostname = "master-0#{i}"
         node.vm.network :private_network, ip: IP_NW + "#{MASTER_IP_START + i}"
         node.vm.network "forwarded_port", guest: 22, host: "#{2710 + i}"
-
+        node.vm.provision "setup-routing", :type => "shell", inline: "echo Setting gateway via " + IP_NW + "#{LB_IP_START}" + " && ip route add default via " + IP_NW + "#{LB_IP_START}"
         node.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
           s.args = ["enp0s8"]
         end
@@ -120,10 +133,17 @@ Vagrant.configure("2") do |config|
         node.vm.provision "install-kubernetes-control-plane", type: "shell", :path => "ubuntu/install-kubernetes-control-plane.sh"
         node.vm.provision "setup-ssh", :type => "shell", :path => "ubuntu/vagrant/setup-ssh.sh"
         if i > 1 then
-            node.vm.provision "setup-kubernetes", :type => "shell", inline: $cpnodeup
+           node.vm.provision "setup-kubernetes", :type => "shell", inline: $cpnodeup
+            config.vm.define "loadbalancer" do |lb|
+                lb.vm.provision "setup-haproxy", :type => "shell", inline: "cat <<EOF | tee /etc/haproxy/haproxy.cfg
+                                                                                 server " + "master-0#{i} " + IP_NW + "#{MASTER_IP_START + i}" + ":6443 check fall 3 rise 2
+                                                                              EOF"
+                lb.vm.provision "setup-haproxy", :type => "shell", inline: "systemctl reload haproxy"
+            end
         else
             # Provision for first control-plane
             node.vm.provision "setup-kubernetes", :type => "shell", inline: $firstcpnodeup
+            node.vm.provision "setup-master-isolate", :type => "shell", inline: "export KUBECONFIG=/etc/kubernetes/admin.conf && kubectl taint nodes --all node-role.kubernetes.io/master-"
         end
       end
   end
@@ -132,14 +152,14 @@ Vagrant.configure("2") do |config|
   (1..NUM_WORKER_NODE).each do |i|
     config.vm.define "worker-0#{i}" do |node|
         node.vm.provider "virtualbox" do |vb|
-            vb.name = "kube-hb-worker-0#{i}"
+            vb.name = "kube-ha-worker-0#{i}"
             vb.memory = 512
             vb.cpus = 1
         end
         node.vm.hostname = "worker-0#{i}"
         node.vm.network :private_network, ip: IP_NW + "#{NODE_IP_START + i}"
 		node.vm.network "forwarded_port", guest: 22, host: "#{2720 + i}"
-
+		node.vm.provision "setup-routing", :type => "shell", inline: "echo Setting gateway via " + IP_NW + "#{LB_IP_START}" + " && ip route add default via " + IP_NW + "#{LB_IP_START}"
         node.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
           s.args = ["enp0s8"]
         end
