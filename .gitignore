@@ -51,3 +51,12 @@ service-account-csr.json
 ubuntu-bionic*.log
 .vagrant
 temp
+vagrant/cluster-secrets/admin.conf
+vagrant/cluster-secrets/ca.crt
+vagrant/cluster-secrets/ca.key
+vagrant/cluster-secrets/front-proxy-ca.crt
+vagrant/cluster-secrets/front-proxy-ca.key
+vagrant/cluster-secrets/sa.key
+vagrant/cluster-secrets/sa.pub
+vagrant/cluster-secrets/etcd/ca.crt
+vagrant/cluster-secrets/etcd/ca.key
