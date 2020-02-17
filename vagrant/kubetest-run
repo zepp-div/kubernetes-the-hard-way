@@ -1,0 +1,55 @@
+Install Go:
+---------------------------------------------------------
+wget https://dl.google.com/go/go1.13.8.linux-amd64.tar.gz
+sudo tar -xvf go1.13.8.linux-amd64.tar.gz
+sudo mv go /usr/local
+
+Add this to ~/.profile
+export GOROOT=/usr/local/go
+export GOPATH=$HOME/go
+export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
+
+
+Adding vagrant user to docker group
+---------------------------------------------------------
+sudo usermod -aG docker vagrant
+
+
+Installing build-essential (Возможно не нужен)
+---------------------------------------------------------
+sudo apt install build-essential
+
+
+Getting Kubernetes & test-infra/kubetest
+---------------------------------------------------------
+go get k8s.io/kubernetes
+go get k8s.io/test-infra/kubetest
+
+
+Install test/e2e
+---------------------------------------------------------
+cd ~/go/src/k8s.io/kubernetes
+go install ./test/e2e
+
+
+Install kubetest
+---------------------------------------------------------
+cd ~/go/src/k8s.io/test-infra
+GO111MODULE=on go install ./kubetest
+
+--------------------------------------------------------- (Возможно не нужен)
+go get -v -u k8s.io/test-infra/kubetest
+kubetest --extract=v1.13.0
+cd kubernetes
+export KUBE_MASTER_IP="192.168.5.11:6443"
+export KUBE_MASTER=master-1
+kubetest --test --provider=skeleton --test_args="--ginkgo.focus=\[Conformance\]" | tee test.out
+--------------------------------------------------------- (Возможно не нужен)
+./build/run.sh make cross
+---------------------------------------------------------
+
+
+kubetest --extract=v1.13.0 (<Версия kube-release>)
+export KUBE_MASTER_IP="192.168.5.11:6443"
+export KUBE_MASTER=master-1
+kubetest --test --provider=skeleton --test_args="--ginkgo.focus=\[Conformance\]" | tee test.out
