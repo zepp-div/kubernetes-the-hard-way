@@ -3,7 +3,7 @@
 
 # Define the number of master and worker nodes
 # If this number is changed, remember to update setup-hosts.sh script with the new hosts IP details in /etc/hosts of each VM.
-NUM_MASTER_NODE = 1
+NUM_MASTER_NODE = 2
 NUM_WORKER_NODE = 2
 
 IP_NW = "192.168.5."
@@ -99,29 +99,30 @@ Vagrant.configure("2") do |config|
   # View the documentation for the provider you are using for more
   # information on available options.
 
+  config.disksize.size = '20GB'
+
   # Provision Load Balancer Node
-  config.vm.define "loadbalancer" do |node|
-    node.vm.provider "virtualbox" do |vb|
+  config.vm.define "loadbalancer" do |lb|
+    lb.vm.provider "virtualbox" do |vb|
         vb.name = "kube-ha-lb"
         vb.memory = 512
         vb.cpus = 1
     end
-    node.vm.hostname = "ha-loadbalancer"
-    node.vm.network :private_network, ip: IP_NW + "#{LB_IP_START}"
-	node.vm.network "forwarded_port", guest: 22, host: 2730
-    node.vm.provision "setup-ip-forward", :type => "shell", inline: "cat <<EOF | tee /etc/sysctl.d/90-ipforward.conf
-                                                                         net.ipv4.ip_forward=1
-                                                                         EOF"
-    node.vm.provision "setup-ip-forward", :type => "shell", inline: "sysctl -w net.ipv4.ip_forward=1"
-    node.vm.provision "setup-masquerade", :type => "shell", inline: "iptables -t nat -A POSTROUTING -o enp0s3 -j MASQUERADE"
-    node.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
+    lb.vm.hostname = "ha-loadbalancer"
+    lb.vm.network :private_network, ip: IP_NW + "#{LB_IP_START}"
+	lb.vm.network "forwarded_port", guest: 22, host: 2730
+    lb.vm.provision "setup-ip-forward", :type => "shell", :path => "ubuntu/vagrant/setup-ip-forward.sh"
+    lb.vm.provision "setup-masquerade", :type => "shell", inline: "iptables -t nat -A POSTROUTING -o $1 -m addrtype ! --src-type LOCAL -j MASQUERADE" do |nf|
+      nf.args = ["enp0s3"]
+    end
+    lb.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
       s.args = ["enp0s8"]
     end
 
-    node.vm.provision "setup-dns", type: "shell", :path => "ubuntu/update-dns.sh"
-	node.vm.provision "install-haproxy", type: "shell", :path => "ubuntu/install-haproxy.sh"
-    node.vm.provision "setup-haproxy", :type => "shell", :path => "ubuntu/vagrant/setup-haproxy.sh"
-    node.vm.provision "setup-ssh", :type => "shell", :path => "ubuntu/vagrant/setup-ssh.sh"
+    lb.vm.provision "setup-dns", type: "shell", :path => "ubuntu/update-dns.sh"
+	lb.vm.provision "install-haproxy", type: "shell", :path => "ubuntu/install-haproxy.sh"
+    lb.vm.provision "setup-haproxy", :type => "shell", :path => "ubuntu/vagrant/setup-haproxy.sh"
+    lb.vm.provision "setup-ssh", :type => "shell", :path => "ubuntu/vagrant/setup-ssh.sh"
 
   end
 
@@ -133,11 +134,12 @@ Vagrant.configure("2") do |config|
             vb.name = "kube-ha-master-0#{i}"
             vb.memory = 2048
             vb.cpus = 2
+#             vb.disksize.size = '20GB'
         end
         node.vm.hostname = "master-0#{i}"
         # Setup private network
         node.vm.network :private_network, ip: IP_NW + "#{MASTER_IP_START + i}"
-        node.vm.provision "setup-routing", :type => "shell", :path => "ubuntu/vagrant/setup-routing.sh" do |s|
+        node.vm.provision "setup-routing", :type => "shell", :path => "ubuntu/vagrant/setup-node-routing.sh" do |s|
           s.args = ["enp0s8", "#{IP_NW}#{LB_IP_START}"]
         end
         # Setup port-forwarding
@@ -178,13 +180,10 @@ Vagrant.configure("2") do |config|
         node.vm.hostname = "worker-0#{i}"
         # Setup private network
         node.vm.network :private_network, ip: IP_NW + "#{NODE_IP_START + i}"
-        node.vm.provision "setup-routing", :type => "shell", :path => "ubuntu/vagrant/setup-routing.sh" do |s|
+        node.vm.provision "setup-routing", :type => "shell", :path => "ubuntu/vagrant/setup-node-routing.sh" do |s|
           s.args = ["enp0s8", "#{IP_NW}#{LB_IP_START}"]
         end
-		    node.vm.network "forwarded_port", guest: 22, host: "#{2720 + i}"
-        node.vm.provision "setup-routing", :type => "shell", :path => "ubuntu/vagrant/setup-routing.sh" do |s|
-          s.args = ["enp0s8", "#{IP_NW}#{LB_IP_START}"]
-        end
+		node.vm.network "forwarded_port", guest: 22, host: "#{2720 + i}"
 
         node.vm.provision "setup-hosts", :type => "shell", :path => "ubuntu/vagrant/setup-hosts.sh" do |s|
           s.args = ["enp0s8"]

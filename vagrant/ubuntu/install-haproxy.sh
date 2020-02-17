@@ -1,4 +1,4 @@
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive 
 apt-get update
-apt-get install -y haproxy
+apt-get install -y haproxy iptables-persistent

@@ -8,7 +8,6 @@ network:
   ethernets:
     $1:        
       gateway4: $2
-
 EOF
 
 netplan apply
